@@ -1,0 +1,128 @@
+#!/usr/bin/php
+<?php
+
+$loader = require __DIR__ . '/vendor/autoload.php';
+
+$color_red = "\e[1;37;41m";
+$color_reset = "\e[0m";
+
+function getConfig(){
+	$config_ini = parse_ini_file(__DIR__.'/config.ini');
+	$config = new \Namecheap\Config();
+	$config->apiUser($config_ini['NAMECHEAP_USER'])
+		->apiKey($config_ini['NAMECHEAP_API_KEY'])
+		->clientIp($config_ini['NAMECHEAP_CLIENT_IP']);
+	return $config;
+}
+
+function getDomains($config){
+	fwrite(STDERR,'Getting Domains'.PHP_EOL);
+	try {
+		$command = Namecheap\Api::factory($config, 'domains.getList');
+		$command->dispatch();
+		return $command->domains;
+	} catch (\Exception $e) {
+		die($e->getMessage());
+	}
+}
+
+function getDomainTLD($domain){
+	return substr(strstr($domain,'.'),1);
+}
+
+function getTLDPrice($config, $tld){
+	fwrite(STDERR,'Getting TLD Price for '.$tld.PHP_EOL);
+	try {
+		$command = Namecheap\Api::factory($config, 'users.getPricing');
+		$command->setParams(array(
+			'ActionName' => 'RENEW',
+			'ProductName' => strtoupper($tld)
+		))->dispatch();
+		return $command->data[0]['YourPrice'];
+	} catch (\Exception $e) {
+		die($e->getMessage());
+	}
+}
+
+function colorField($fieldname, $fieldvalue){
+	global $color_red, $color_reset;
+	switch ($fieldname){
+	case 'IsExpired':
+		return ($fieldvalue === 'false') ? $fieldvalue : $color_red.$fieldvalue.$color_reset;
+		break;
+	case 'AutoRenew':
+		return ($fieldvalue === 'true') ? $fieldvalue : $color_red.$fieldvalue.$color_reset;
+		break;
+	case 'WhoisGuard':
+		return ($fieldvalue === 'ENABLED') ? 'true' : $color_red.'false'.$color_reset;
+		break;
+	case 'IsPremium':
+		return ($fieldvalue === 'false') ? $fieldvalue : $color_red.$fieldvalue.$color_reset;
+		break;
+	default:
+		return $fieldvalue;
+		break;
+	}
+}
+
+$field_key_name = 'Name';
+$field_key_value = 'Domain';
+
+$config = getConfig();
+$domains = getDomains($config);
+$domain_names = array_column($domains,$field_key_name);
+
+$tlds = array_unique(array_map('getDomainTLD',$domain_names));
+$tld_prices = array();
+foreach ($tlds as $tld)
+	$tld_prices[$tld] = getTLDPrice($config,$tld);
+
+$tab_char_length = 8;
+$tab_char = '	';
+
+$fields = array(
+	'Created' => 'Create	', # keep tab for 10 char date
+	'Expires' => 'Expire	',
+	'IsExpired' => 'Expired',
+	'AutoRenew' => 'Renew',
+	'WhoisGuard' => 'WHOIS',
+	'IsPremium' => 'Premium'
+);
+$fields_extra = array(
+	'Cost',
+	'Years',
+	'Total'
+);
+
+$domain_name_char_max = max(array_map('strlen',$domain_names));
+$domain_name_tabs = ceil($domain_name_char_max / $tab_char_length);
+
+fwrite(STDERR,$field_key_value.str_repeat($tab_char,$domain_name_tabs - floor(strlen($field_key_value) / $tab_char_length)));
+fwrite(STDERR,implode($tab_char,$fields+$fields_extra).PHP_EOL);
+
+$fields = array($field_key_name => $field_key_value) + $fields;
+$domain_count = count($domains);
+
+$total_annual_price = 0;
+$total_price = 0;
+
+foreach ($domains as $domain){
+	foreach (array_intersect_key($domain, $fields) as $fieldname => $fieldvalue){
+		if ($fieldname !== 'Name')
+			echo colorField($fieldname,$fieldvalue).$tab_char;
+		else
+			echo $fieldvalue.str_repeat($tab_char,$domain_name_tabs - floor(strlen($fieldvalue) / $tab_char_length));	
+	}
+	$tld_price = $tld_prices[getDomainTLD($domain[$field_key_name])];
+	echo $tld_price;
+	$domain_years = round((strtotime($domain['Expires']) - strtotime($domain['Created'])) / 365 / 24 / 60 / 60);
+	echo $tab_char.$domain_years;
+	$domain_cost_total = $tld_price * $domain_years;
+	echo $tab_char.$domain_cost_total;
+	echo PHP_EOL;
+	$total_annual_price += $tld_price;
+	$total_price += $domain_cost_total;
+}
+fwrite(STDERR,'Total Annual / Cumulative Cost Estimate: '.$total_annual_price.' / '.$total_price.PHP_EOL);
+
+?>

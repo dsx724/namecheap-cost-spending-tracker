@@ -1,0 +1,5 @@
+{
+    "require": {
+        "dsx724/namecheap-php-sdk": "dev-master"
+    }
+}
